@@ -61,6 +61,18 @@ def extract_codes(text: str) -> List[str]:
     return seen
 
 
+def split_list(text: str) -> List[str]:
+    """Phase 1 contract: comma-separated cell -> list of raw strings."""
+    if not text or text.strip().lower() in EMPTY_VALUES:
+        return []
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def codes_in(items: Iterable[str]) -> List[str]:
+    """Course codes (display form) found in a list of raw catalog strings."""
+    return extract_codes(", ".join(items or []))
+
+
 def parse_credits(value: str) -> int:
     match = re.search(r"\d+(?:\.\d+)?", value or "")
     return int(float(match.group(0))) if match else 0
@@ -114,8 +126,8 @@ def parse_catalog(html: bytes) -> List[Dict]:
                     "course_code": raw_code,
                     "title": cell(cells, "title"),
                     "credits": parse_credits(cell(cells, "credits")),
-                    "prerequisites": extract_codes(cell(cells, "prereqs")),
-                    "cross_listed": extract_codes(cell(cells, "cross")),
+                    "prerequisites": split_list(cell(cells, "prereqs")),
+                    "cross_listed": split_list(cell(cells, "cross")),
                 }
             )
     return courses
@@ -213,9 +225,9 @@ def cross_listed_with(code: str, catalog: Dict[str, Dict]) -> List[str]:
     partners: List[str] = []
     course = catalog.get(key)
     if course:
-        partners.extend(normalize_code(c) for c in course.get("cross_listed", []))
+        partners.extend(normalize_code(c) for c in codes_in(course.get("cross_listed", [])))
     for other_key, other in catalog.items():
-        others = {normalize_code(c) for c in other.get("cross_listed", [])}
+        others = {normalize_code(c) for c in codes_in(other.get("cross_listed", []))}
         if key in others and other_key not in partners:
             partners.append(other_key)
     return [p for p in partners if p != key]
@@ -242,7 +254,7 @@ def build_audit(
         course = catalog.get(normalize_code(code))
         if not course:
             continue
-        for prereq in course.get("prerequisites", []):
+        for prereq in codes_in(course.get("prerequisites", [])):
             terms = completed_terms.get(normalize_code(prereq), [])
             if any(term_before(t, planned_term) for t in terms):
                 continue

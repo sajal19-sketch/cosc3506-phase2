@@ -46,7 +46,8 @@ def test_catalog_import_and_lookup(client):
     for code in ("COSC3506", "cosc-3506", "COSC 3506"):
         r = client.get(f"/api/v1/catalog/courses/{code}")
         assert r.status_code == 200
-        assert r.json()["cross_listed"] == ["ITEC-3506"]
+        assert r.json()["cross_listed"] == ["ITEC 3506"]
+        assert r.json()["prerequisites"] == ["COSC 2007"]
     assert client.get("/api/v1/catalog/courses/NOPE1234").status_code == 404
 
 

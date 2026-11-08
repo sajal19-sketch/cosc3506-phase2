@@ -63,11 +63,21 @@ def test_parse_catalog(catalog):
     assert len(catalog) == 10
     se = catalog["COSC3506"]
     assert se["credits"] == 3
-    assert se["prerequisites"] == ["COSC-2007"]
-    assert se["cross_listed"] == ["ITEC-3506"]
-    assert catalog["COSC4426"]["prerequisites"] == ["COSC-3127", "COSC-2007"]
+    # Phase 1 contract: raw strings exactly as written in the catalog cell
+    assert se["course_code"] == "COSC 3506"
+    assert se["prerequisites"] == ["COSC 2007"]
+    assert se["cross_listed"] == ["ITEC 3506"]
+    assert catalog["COSC4426"]["prerequisites"] == ["COSC 3127", "COSC 2007"]
     assert catalog["MATH1056"]["prerequisites"] == []
+    assert catalog["MATH1056"]["cross_listed"] == []
     assert catalog["COSC4086"]["credits"] == 6
+
+
+def test_split_list_and_codes_in():
+    assert engine.split_list("COSC 3127, COSC 2007") == ["COSC 3127", "COSC 2007"]
+    assert engine.split_list("None") == []
+    assert engine.codes_in(["COSC 3127 and cosc-2007"]) == ["COSC-3127", "COSC-2007"]
+    assert engine.codes_in([]) == []
 
 
 def test_parse_catalog_ignores_non_catalog_tables():
