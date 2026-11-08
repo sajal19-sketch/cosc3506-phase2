@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head><title>Test Catalog</title></head>
+<body>
+<table border="1">
+  <thead>
+    <tr><th>Course Code</th><th>Title</th><th>Credits</th><th>Prerequisites</th><th>Cross-listed</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>COSC 1046</td><td>Intro to CS I</td><td>3</td><td>None</td><td></td></tr>
+    <tr><td>COSC 1047</td><td>Intro to CS II</td><td>3</td><td>COSC 1046</td><td></td></tr>
+    <tr><td>COSC 2006</td><td>Data Structures I</td><td>3</td><td>COSC-1047</td><td></td></tr>
+    <tr><td>COSC 2007</td><td>Data Structures II</td><td>3</td><td>COSC 2006</td><td></td></tr>
+    <tr><td>COSC 3127</td><td>Programming Languages</td><td>3</td><td>COSC 2007</td><td></td></tr>
+    <tr><td>COSC 3506</td><td>Software Engineering</td><td>3</td><td>COSC 2007</td><td>ITEC 3506</td></tr>
+    <tr><td>ITEC 3506</td><td>Software Engineering</td><td>3</td><td>COSC 2007</td><td>COSC 3506</td></tr>
+    <tr><td>COSC 4426</td><td>Topics in CS</td><td>3</td><td>COSC 3127, COSC 2007</td><td></td></tr>
+    <tr><td>MATH 1056</td><td>Discrete Math I</td><td>3</td><td>n/a</td><td>None</td></tr>
+    <tr><td>COSC 4086</td><td>Fourth Year Project</td><td>6</td><td>cosc3506</td><td></td></tr>
+  </tbody>
+</table>
+</body>
+</html>

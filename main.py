@@ -1,134 +1,144 @@
-from fastapi import FastAPI, HTTPException, status, UploadFile, File
+"""COSC-3506 Individual Assignment — Phases 1, 2 and 3 in one FastAPI service."""
+
+import os
+from typing import Dict, List
+
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
-from typing import List, Dict
-from bs4 import BeautifulSoup
 
-app = FastAPI()
+import audit_engine as engine
 
-# --- DATA MODELS ---
+app = FastAPI(title="Academic Audit API", version="3.0.0")
+
+
+# --- DATA MODELS -------------------------------------------------------------
 class CourseRecord(BaseModel):
     course_code: str
     term: str
     credits_earned: int = 0
     status: str = ""
 
+
+class PlannedCourse(BaseModel):
+    course_code: str
+    term: str
+
+
 class PlanInput(BaseModel):
-    planned_courses: List[CourseRecord]
+    planned_courses: List[PlannedCourse]
+
 
 class HistoryInput(BaseModel):
     history: List[CourseRecord]
 
-class StudentProfile(BaseModel):
-    student_id: str
-    history: List[CourseRecord]
-    plan: List[CourseRecord]
 
-# --- IN-MEMORY DATABASE ---
-# Strict data isolation: { "123": {"history": [...], "plan": [...]}, "456": {...} }
+# --- IN-MEMORY STORES --------------------------------------------------------
+# The catalog is global; student data is strictly isolated per student_id.
+catalog_db: Dict[str, Dict] = {}
 database: Dict[str, Dict] = {}
 
-# --- HELPER FOR GRADES ---
-def get_grade_weight(grade_str: str) -> int:
-    grade = grade_str.strip()
-    if not grade or grade == 'P':
-        return 0
-    try:
-        return int(grade) + 100  # Numeric grades beat letters
-    except ValueError:
-        return 100 - ord(grade[0].upper()) if grade else 0
 
-# --- HISTORY ENDPOINTS (HTML IN) ---
-@app.post("/api/v1/students/{student_id}/history/import", status_code=201)
-async def import_history(student_id: str, file: UploadFile = File(...)):
-    content = await file.read()
-    soup = BeautifulSoup(content, 'html.parser')
-    
-    parsed_courses = {}
-    
-    for tr in soup.find_all('tr'):
-        tds = tr.find_all('td')
-        if len(tds) >= 6:
-            status_val = tds[0].get_text(strip=True)
-            course = tds[1].get_text(strip=True)
-            grade = tds[3].get_text(strip=True)
-            term = tds[4].get_text(strip=True)
-            credits_str = tds[5].get_text(strip=True)
-            
-            if status_val in ['Completed', 'In-Progress', 'Attempted'] and term:
-                try:
-                    credits = int(credits_str)
-                except ValueError:
-                    credits = 0
-                
-                key = (course, term)
-                weight = get_grade_weight(grade)
-                
-                # Deduplication logic
-                if key not in parsed_courses:
-                    parsed_courses[key] = {"status": status_val, "course": course, "grade": grade, "term": term, "credits": credits, "weight": weight}
-                else:
-                    existing = parsed_courses[key]
-                    if weight > existing["weight"] or (weight == existing["weight"] and credits > existing["credits"]):
-                        parsed_courses[key] = {"status": status_val, "course": course, "grade": grade, "term": term, "credits": credits, "weight": weight}
-
-    # Initialize the student
-    if student_id not in database:
-        database[student_id] = {"history": [], "plan": []}
-        
-    history_list = [
-        {"course_code": v["course"], "term": v["term"], "credits_earned": v["credits"], "status": v["status"]}
-        for v in parsed_courses.values()
-    ]
-    
-    database[student_id]["history"] = history_list
-    
-    return {"status": "success", "past_courses_imported": len(history_list)}
-
-@app.put("/api/v1/students/{student_id}/history")
-def update_history(student_id: str, history_data: HistoryInput):
+def get_student(student_id: str) -> Dict:
     if student_id not in database:
         raise HTTPException(status_code=404, detail="Student not found")
-    
-    database[student_id]["history"] = [course.model_dump() for course in history_data.history]
+    return database[student_id]
+
+
+@app.get("/")
+def read_root():
+    return {"status": "Academic Audit API is running", "phase": 3}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+# --- PHASE 1: CATALOG --------------------------------------------------------
+@app.post("/api/v1/admin/catalog/import")
+async def import_catalog(file: UploadFile = File(...)):
+    courses = engine.parse_catalog(await file.read())
+    if not courses:
+        raise HTTPException(status_code=400, detail="No catalog rows found")
+    for course in courses:
+        catalog_db[engine.normalize_code(course["course_code"])] = course
+    return {
+        "message": f"Successfully imported {len(courses)} courses",
+        "courses_imported": len(courses),
+    }
+
+
+@app.get("/api/v1/catalog/courses/{course_code}")
+def get_course(course_code: str):
+    course = engine.lookup(catalog_db, course_code)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return course
+
+
+# --- PHASE 2: HISTORY --------------------------------------------------------
+@app.post("/api/v1/students/{student_id}/history/import", status_code=201)
+async def import_history(student_id: str, file: UploadFile = File(...)):
+    history = engine.parse_transcript(await file.read())
+    student = database.setdefault(student_id, {"history": [], "plan": []})
+    student["history"] = history
+    return {"status": "success", "past_courses_imported": len(history)}
+
+
+@app.put("/api/v1/students/{student_id}/history")
+def update_history(student_id: str, payload: HistoryInput):
+    student = get_student(student_id)
+    student["history"] = [c.model_dump() for c in payload.history]
     return {"status": "success", "message": "Academic history updated successfully"}
+
 
 @app.delete("/api/v1/students/{student_id}/history")
 def delete_history(student_id: str):
-    if student_id not in database:
-        raise HTTPException(status_code=404, detail="Student not found")
-    
-    database[student_id]["history"] = []
+    get_student(student_id)["history"] = []
     return {"status": "success"}
 
-# --- PLAN ENDPOINTS (JSON IN) ---
+
+# --- PHASE 2: PLAN -----------------------------------------------------------
 @app.post("/api/v1/students/{student_id}/plan")
-def create_plan(student_id: str, plan_data: PlanInput):
-    if student_id not in database:
-        raise HTTPException(status_code=404, detail="Student not found")
-    database[student_id]["plan"] = [course.model_dump() for course in plan_data.planned_courses]
-    return {"status": "success", "planned_courses_saved": len(database[student_id]["plan"])}
+def create_plan(student_id: str, payload: PlanInput):
+    student = get_student(student_id)
+    student["plan"] = [c.model_dump() for c in payload.planned_courses]
+    return {"status": "success", "planned_courses_saved": len(student["plan"])}
+
 
 @app.put("/api/v1/students/{student_id}/plan")
-def update_plan(student_id: str, plan_data: PlanInput):
-    if student_id not in database:
-        raise HTTPException(status_code=404, detail="Student not found")
-    database[student_id]["plan"] = [course.model_dump() for course in plan_data.planned_courses]
-    return {"status": "success", "planned_courses_saved": len(database[student_id]["plan"])}
+def update_plan(student_id: str, payload: PlanInput):
+    return create_plan(student_id, payload)
 
-@app.delete("/api/v1/students/{student_id}/plan", status_code=status.HTTP_204_NO_CONTENT)
+
+@app.delete(
+    "/api/v1/students/{student_id}/plan", status_code=status.HTTP_204_NO_CONTENT
+)
 def delete_plan(student_id: str):
-    if student_id not in database:
-        raise HTTPException(status_code=404, detail="Student not found")
-    database[student_id]["plan"] = []
+    get_student(student_id)["plan"] = []
     return None
 
-# --- PROFILE ENDPOINT ---
+
 @app.get("/api/v1/students/{student_id}/profile")
 def get_profile(student_id: str):
-    if student_id not in database:
-        raise HTTPException(status_code=404, detail="Student not found")
+    student = get_student(student_id)
     return {
         "student_id": student_id,
-        "history": database[student_id]["history"],
-        "plan": database[student_id]["plan"]
+        "history": student["history"],
+        "plan": student["plan"],
     }
+
+
+# --- PHASE 3: AUDIT ----------------------------------------------------------
+@app.get("/api/v1/students/{student_id}/audit-report")
+def audit_report(student_id: str, strict: bool = Query(False)):
+    student = get_student(student_id)
+    return engine.build_audit(
+        student_id, student["history"], student["plan"], catalog_db, strict
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
