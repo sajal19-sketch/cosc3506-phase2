@@ -22,8 +22,19 @@ def http():
 
 
 @pytest.fixture(scope="module")
-def student(http):
+def token(http):
+    """Each run registers a fresh student; the username doubles as the student_id (BOLA)."""
     sid = f"it-{uuid.uuid4().hex[:8]}"
+    creds = {"username": sid, "password": "Integration1!"}
+    assert http.post("/api/v1/auth/register", json=creds).status_code == 201
+    r = http.post("/api/v1/auth/login", json=creds)
+    assert r.status_code == 200, r.text
+    return sid, {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+@pytest.fixture(scope="module")
+def student(http, token):
+    sid, headers = token
     r = http.post(
         "/api/v1/admin/catalog/import",
         files={"file": ("catalog.html", (FIXTURES / "sample_catalog.html").read_bytes(), "text/html")},
@@ -32,6 +43,7 @@ def student(http):
     r = http.post(
         f"/api/v1/students/{sid}/history/import",
         files={"file": ("t.html", (FIXTURES / "sample_transcript.html").read_bytes(), "text/html")},
+        headers=headers,
     )
     assert r.status_code == 201, r.text
     plan = [
@@ -77,6 +89,30 @@ def test_credit_summary(http, student):
     assert summary == {"total_earned": 18, "total_planned": 15, "total_remaining_for_graduation": 87}
 
 
-def test_profile_shape(http, student):
-    body = http.get(f"/api/v1/students/{student}/profile").json()
+def test_profile_shape(http, student, token):
+    assert http.get(f"/api/v1/students/{student}/profile").status_code == 401
+    body = http.get(f"/api/v1/students/{student}/profile", headers=token[1]).json()
     assert set(body) == {"student_id", "history", "plan"}
+
+
+def test_bola_rejects_other_student(http, student, token):
+    r = http.post(
+        "/api/v1/students/someone-else/history/import",
+        files={"file": ("t.html", b"<table></table>", "text/html")},
+        headers=token[1],
+    )
+    assert r.status_code == 401
+
+
+def test_recommendations_live(http, student, token):
+    body = http.get(f"/api/v1/students/{student}/recommendations", headers=token[1]).json()
+    courses = {c for t in body["recommended_pathway"] for c in t["courses"]}
+    assert body["student_id"] == student
+    assert courses == {"COSC 4426", "COSC 4086"}
+
+
+def test_rate_limit_live(http, student, token):
+    # Four audit calls already ran above with no token (IP bucket); this token's bucket is fresh.
+    url = f"/api/v1/students/{student}/audit-report"
+    codes = [http.get(url, headers=token[1]).status_code for _ in range(11)]
+    assert codes == [200] * 10 + [429]

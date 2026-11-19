@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+import security
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CATALOG = (FIXTURES / "sample_catalog.html").read_bytes()
@@ -14,12 +15,27 @@ TRANSCRIPT = (FIXTURES / "sample_transcript.html").read_bytes()
 def clean_state():
     main.catalog_db.clear()
     main.database.clear()
+    security.users_db.clear()
+    security.seed_admin()
+    main.audit_limiter.reset()
     yield
 
 
 @pytest.fixture
 def client():
     return TestClient(main.app)
+
+
+def auth(client, username):
+    """Register (if needed) and log in; return an Authorization header."""
+    client.post("/api/v1/auth/register", json={"username": username, "password": "pw-" + username})
+    r = client.post("/api/v1/auth/login", json={"username": username, "password": "pw-" + username})
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+def admin(client):
+    r = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
 def load(client, sid="770001"):
@@ -31,6 +47,7 @@ def load(client, sid="770001"):
     r = client.post(
         f"/api/v1/students/{sid}/history/import",
         files={"file": ("t.html", TRANSCRIPT, "text/html")},
+        headers=auth(client, sid),
     )
     assert r.status_code == 201
     return r
@@ -67,9 +84,9 @@ def test_history_lifecycle(client):
     ]
     r = client.put("/api/v1/students/s1/history", json={"history": new_history})
     assert r.status_code == 200
-    assert client.get("/api/v1/students/s1/profile").json()["history"] == new_history
+    assert client.get("/api/v1/students/s1/profile", headers=admin(client)).json()["history"] == new_history
     assert client.delete("/api/v1/students/s1/history").status_code == 200
-    assert client.get("/api/v1/students/s1/profile").json()["history"] == []
+    assert client.get("/api/v1/students/s1/profile", headers=admin(client)).json()["history"] == []
 
 
 def test_unknown_student_404(client):
@@ -79,7 +96,7 @@ def test_unknown_student_404(client):
     assert client.post("/api/v1/students/x/plan", json=body).status_code == 404
     assert client.put("/api/v1/students/x/plan", json=body).status_code == 404
     assert client.delete("/api/v1/students/x/plan").status_code == 404
-    assert client.get("/api/v1/students/x/profile").status_code == 404
+    assert client.get("/api/v1/students/x/profile", headers=admin(client)).status_code == 404
     assert client.get("/api/v1/students/x/audit-report").status_code == 404
 
 
@@ -88,14 +105,14 @@ def test_plan_lifecycle_and_profile(client):
     plan = [{"course_code": "COSC-3506", "term": "26F"}]
     r = client.post("/api/v1/students/s2/plan", json={"planned_courses": plan})
     assert r.json() == {"status": "success", "planned_courses_saved": 1}
-    profile = client.get("/api/v1/students/s2/profile").json()
+    profile = client.get("/api/v1/students/s2/profile", headers=admin(client)).json()
     assert set(profile) == {"student_id", "history", "plan"}
     assert profile["plan"] == plan
     plan2 = plan + [{"course_code": "COSC-4426", "term": "27W"}]
     r = client.put("/api/v1/students/s2/plan", json={"planned_courses": plan2})
     assert r.json()["planned_courses_saved"] == 2
     assert client.delete("/api/v1/students/s2/plan").status_code == 204
-    assert client.get("/api/v1/students/s2/profile").json()["plan"] == []
+    assert client.get("/api/v1/students/s2/profile", headers=admin(client)).json()["plan"] == []
 
 
 def test_wrong_verb_rejected(client):
@@ -108,9 +125,10 @@ def test_student_isolation(client):
     client.post(
         "/api/v1/students/b/history/import",
         files={"file": ("t.html", b"<table></table>", "text/html")},
+        headers=auth(client, "b"),
     )
-    assert len(client.get("/api/v1/students/a/profile").json()["history"]) == 8
-    assert client.get("/api/v1/students/b/profile").json()["history"] == []
+    assert len(client.get("/api/v1/students/a/profile", headers=admin(client)).json()["history"]) == 8
+    assert client.get("/api/v1/students/b/profile", headers=admin(client)).json()["history"] == []
 
 
 def test_audit_report_full(client):
